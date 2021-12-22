@@ -1,0 +1,383 @@
+
+%macro arm4(outcome,name);
+
+data data.weightresult_&outcome._4arm;
+set data.cohort;
+keep patienticn cohort cohort4arm pre&outcome &outcome._out t_&outcome ;
+run; 
+
+
+data data.result_&outcome._4arm;
+set _null_;
+run;
+
+data hxmodel_vha;
+merge data.cohort (in=a where=(Pre&outcome.^=1))
+ data.hxicd10 data.hxmed data.hxlab;
+by PatientICN cohort;
+if a;
+
+run;
+
+
+/** icd ***/
+
+*how many times disease shows up in cohort; 
+proc means data=hxmodel_vha noprint;
+var disease1-disease540;
+class cohort;
+output out=icd10_1 sum=disease1-disease540;
+run;
+
+*totals;
+data icd10_1;
+set icd10_1;
+if cohort="" then cohort="Z";
+run;
+
+*transpose to do calculations later;
+proc transpose data=icd10_1 out=icd10_2;
+id cohort;
+run;
+
+*make sure disease happens in at least 10 people in each cohort;
+data icd10_2;
+set icd10_2;
+where neg1>=100 and neg2>=100 and pos>=100;
+run;
+
+*calculate RR for each comparison;
+data icd10_2(where=(_name_^='_FREQ_'));
+set icd10_2;
+retain totalN totala totalb totalc;
+if _name_='_FREQ_' then do; totalN=z; totala=pos; totalb=NEG1; totalc=neg2;end;
+else do; RR_neg1=(POS/(POS+NEG1))/((totala-POS)/(totala+totalb-POS-NEG1));  
+	 RR_neg2=(POS/(POS+NEG2))/((totala-POS)/(totala+totalc-POS-NEG2)); end;
+run;
+
+*if numerator or denominator got switched, fix them;
+data ICD10_2;
+set ICD10_2 ;
+if RR_neg1<1 then RR_neg1=1/RR_neg1;
+if RR_neg2<1 then RR_neg2=1/RR_neg2;
+if RR_neg1=. then RR_neg1=1;
+if RR_neg2=. then RR_neg2=1;
+run;
+
+/***medication***/ 
+
+proc means data=hxmodel_vha noprint;
+var med1-med543;
+class cohort;
+output out=med_1 sum=med1-med543;
+run;
+
+data med_1;
+set med_1;
+if cohort="" then cohort="Z";
+run;
+
+proc transpose data=med_1 out=med_2;
+id cohort;
+run;
+
+data med_2;
+set med_2;
+where neg1>=100 and neg2>=100 and pos>=100;
+run;
+
+data med_2(where=(_name_^='_FREQ_'));
+set med_2;
+retain totalN totala totalb totalc;
+if _name_='_FREQ_' then do; totalN=z; totala=pos; totalb=NEG1; totalc=neg2;end;
+else do; RR_neg1=(POS/(POS+NEG1))/((totala-POS)/(totala+totalb-POS-NEG1));  
+	 RR_neg2=(POS/(POS+NEG2))/((totala-POS)/(totala+totalc-POS-NEG2)); end;
+run;
+
+data med_2;
+set med_2 ;
+if RR_neg1<1 then RR_neg1=1/RR_neg1;
+if RR_neg2<1 then RR_neg2=1/RR_neg2;
+if RR_neg1=. then RR_neg1=1;
+if RR_neg2=. then RR_neg2=1;
+run;
+
+
+/***lab***/  
+
+proc means data=hxmodel_vha noprint;
+var hlab1-hlab38 llab1-llab38;
+class cohort;
+output out=lab_1 sum=hlab1-hlab38 llab1-llab38;
+run;
+
+data lab_1;
+set lab_1;
+if cohort="" then cohort="Z";
+run;
+
+proc transpose data=lab_1 out=lab_2;
+id cohort;
+run;
+
+data lab_2;
+set lab_2;
+where neg1>=100 and neg2>=100 and pos>=100;
+run;
+
+data lab_2(where=(_name_^='_FREQ_'));
+set lab_2;
+retain totalN totala totalb totalc;
+if _name_='_FREQ_' then do; totalN=z; totala=pos; totalb=NEG1; totalc=neg2;end;
+else do; RR_neg1=(POS/(POS+NEG1))/((totala-POS)/(totala+totalb-POS-NEG1));  
+	 RR_neg2=(POS/(POS+NEG2))/((totala-POS)/(totala+totalc-POS-NEG2)); end;
+run;
+
+data lab_2;
+set lab_2 ;
+if RR_neg1<1 then RR_neg1=1/RR_neg1;
+if RR_neg2<1 then RR_neg2=1/RR_neg2;
+if RR_neg1=. then RR_neg1=1;
+if RR_neg2=. then RR_neg2=1;
+run;
+
+/** all three **/  
+
+data hdps_vha;
+length _name_ $32.;
+set icd10_2 lab_2  med_2;
+run;
+
+/********************************************   CONTEMPORARY COMPARISON    *******************************************/
+
+*sort by largest RR;
+proc sort data=hdps_vha;
+by descending rr_neg1;
+run;
+
+*pick top 100 with highest RR;
+data hdps_vha;
+set hdps_vha;
+if _n_<=100;
+run;
+
+*macro variable '&hdvs' of 100 high dimensional covariate names to use;
+data eee;
+set hdps_vha;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs_vha',cov);
+run;
+
+
+*select 100 high dimensional covariates;
+data contemp;
+set hxmodel_vha;
+where cohort ^="neg2";
+target=0;output;
+target=1;output;
+run;
+
+proc logistic data=contemp (where=(target=1 or cohort^="pos"));
+class  sex race smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto;
+model target(event="1") =  sex race  smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto 
+							_X2-_X22 hxnin hyperlip &hdvs_vha;
+output out=ps_neg1(keep=patienticn cohort4arm cohort target ps_neg1) pred=ps_neg1;
+run;
+
+proc logistic data=contemp (where=(target=1 or cohort4arm="nhos"));
+class  sex race smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto;
+model target(event="1") = sex race  smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto 
+							_X2-_X22 hxnin hyperlip  &hdvs_vha;
+output out=ps_nhos(keep=patienticn cohort4arm cohort target ps_nhos) pred=ps_nhos;
+run;
+
+proc logistic data=contemp (where=(target=1 or cohort4arm="hos"));
+class  sex race smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto;
+model target(event="1") = sex race  smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto 
+							_X2-_X22 hxnin hyperlip  &hdvs_vha;
+output out=ps_hos(keep=patienticn cohort4arm cohort target ps_hos) pred=ps_hos;
+run;
+
+proc logistic data=contemp (where=(target=1 or cohort4arm="icu"));
+class  sex race smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto;
+model target(event="1") = sex race  smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto 
+							_X2-_X22 hxnin hyperlip  &hdvs_vha;
+output out=ps_icu(keep=patienticn cohort4arm cohort target ps_icu) pred=ps_icu;
+run;
+
+
+
+/***    ATT    ***/
+
+/*changed to ATE and olwt, going to use the ATE*/    
+data ps_sum;
+set ps_neg1 ps_nhos ps_hos ps_icu;
+where target=0;
+if cohort4arm="neg1" then ate_4arm_cont=ps_neg1/(1-ps_neg1);
+if cohort4arm="nhos" then ate_4arm_cont=ps_nhos/(1-ps_nhos);
+if cohort4arm="hos" then ate_4arm_cont=ps_hos/(1-ps_hos);
+if cohort4arm="icu" then ate_4arm_cont=ps_icu/(1-ps_icu);
+if ate_4arm_cont>20000 then ate_4arm_cont=20000;
+keep patienticn cohort ate_4arm_cont ps_neg1 ps_nhos ps_hos ps_icu;
+run;
+
+proc sort data=ps_sum;
+by patienticn cohort;
+run;
+
+data data.weightresult_&outcome._4arm;
+merge data.weightresult_&outcome._4arm(in=a) ps_sum;
+by PatientICN cohort;
+if a;
+run;
+
+
+/********************************************   HISTORICAL COMPARISON    *******************************************/
+
+proc sort data=hdps_vha out=hdps_vha2;
+by descending rr_neg2;
+run;
+
+data hdps_vha2;
+set hdps_vha2;
+if _n_<=100;
+run;
+
+data eee2;
+set hdps_vha2;
+length cov $32767.;
+retain cov;
+cov=catx(' ',cov,_name_); 
+call symput('hdvs_vha2',cov);
+run;
+
+
+
+
+*select 100 high dimensional covariates;
+data hist;
+set hxmodel_vha;
+if cohort ^="neg2" then do; target=1; output;end;
+if cohort^="neg1" then do; target=0;output;end;
+
+run;
+
+proc logistic data= hist (where=(target=1 or cohort^="pos"));
+class  sex race smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto;
+model target(event="1") = sex race  smoke longterm Dementia Diabetes HTN CLD HIV CKD Auto 
+							_X2-_X22 hxnin hyperlip &hdvs_vha2;
+output out=ps_neg2(keep=patienticn cohort4arm cohort target ps_neg2) pred=ps_neg2;
+run;
+
+
+
+
+
+/***    ATT    ***/
+
+data ps_sum;
+set ps_neg2 ps_nhos ps_hos ps_icu;
+where target=0;
+if cohort4arm="neg2" then ate_4arm_hist=ps_neg2/(1-ps_neg2);
+if cohort4arm="nhos" then ate_4arm_hist=ps_nhos/(1-ps_nhos);
+if cohort4arm="hos" then ate_4arm_hist=ps_hos/(1-ps_hos);
+if cohort4arm="icu" then ate_4arm_hist=ps_icu/(1-ps_icu);
+if ate_4arm_hist>20000 then ate_4arm_hist=20000;
+keep patienticn cohort4arm cohort ate_4arm_hist ps_neg2;
+run;
+
+proc sort data=ps_sum;
+by patienticn cohort;
+run;
+
+data data.weightresult_&outcome._4arm;
+merge data.weightresult_&outcome._4arm(in=a) ps_sum;
+by PatientICN cohort;
+if a;
+run;
+
+
+
+data model;
+set data.weightresult_&outcome._4arm;
+if ate_4arm_cont=. then ate_4arm_cont=ate_4arm_hist;
+if ate_4arm_hist=. then ate_4arm_hist=ate_4arm_cont;
+run;
+
+
+
+proc sort data=model(keep=cohort4arm) out=base nodupkey;
+by cohort4arm;
+run;
+
+data baseline;
+set base;
+where cohort4arm^="neg2";
+run;
+
+/*********************************    CONTEMPORARY COMPARISON   *******************************************************/
+/* Hazard Ratio */
+ods output parameterestimates = pe_cont;
+proc phreg data=model(where=(ate_4arm_cont^=.)) covs(aggregate) ;
+class cohort4arm (ref="neg1") / param=ref;
+model t_&outcome *&outcome._out (0)=cohort4arm / rl;
+weight ate_4arm_cont;
+id PatientICN;
+baseline out=sur_cont covariates=baseline survival=_all_ lower=surl upper=suru/diradj group=cohort4arm;
+run;
+
+
+data timepoint;
+set sur_cont;
+diff=365-t_&outcome;
+if diff>=0;
+where cohort4arm="neg1";
+run;
+
+proc sort data=timepoint;
+by diff;
+run;
+data timepoint;
+set timepoint;
+if _n_=1 then call symput("timepoint",t_&outcome);
+run;
+
+
+data sur_cont;
+set sur_cont;
+where t_&outcome =&timepoint ;
+run;
+
+data pe_cont;
+set pe_cont;
+if classVal0="nhos" then do;
+call symput ("hr_1",hazardratio);
+call symput ("lhr_1",hrlowercl);
+call symput ("uhr_1",hruppercl);
+end;
+if classVal0="hos" then do;
+call symput ("hr_2",hazardratio);
+call symput ("lhr_2",hrlowercl);
+call symput ("uhr_2",hruppercl);
+end;
+if classVal0="icu" then do;
+call symput ("hr_3",hazardratio);
+call symput ("lhr_3",hrlowercl);
+call symput ("uhr_3",hruppercl);
+end;
+run;
+
+
+
+data data.result_&outcome._4arm;
+set data.result_&outcome._4arm sur_cont sur_hist;
+run;
+
+%mend;
+
+
+
+
+

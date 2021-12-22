@@ -1,0 +1,80 @@
+
+
+
+data vacc;
+set data.cohort;
+keep patienticn cohort vacdate Series1VaccineType t0 endoffollow;
+run;
+
+
+data vacc;
+set vacc;
+length vtype $32.;
+a=upcase(series1vaccinetype);
+if index(a,"MODERNA") and endoffollow>=vacdate>=t0 then moderna=1;else moderna=0;
+ if index(a,"PFIZER") and endoffollow>=vacdate>=t0 then pfizer=1;else pfizer=0;
+if index(a,"JANSSEN") and endoffollow>=vacdate>=t0 then jj=1;else jj=0;
+if a^='' and jj=0 and pfizer=0 and moderna=0 and endoffollow>=vacdate>=t0 then ov=1;else ov=0;
+
+if cohort="neg2" then do;jj=0;moderna=0;pfizer=0;ov=0;end;
+
+if moderna=1 then vtype="Moderna";
+else if pfizer=1 then vtype="Pfizer";
+else if jj=1 then vtype="JJ";
+else if ov=1 then vtype="Other";
+else vtype="NOVACC";
+
+run;
+
+proc freq data=vacc;
+table vtype*cohort;
+run;
+
+
+%macro vacc(outcome,name);
+data model;
+merge data.weightresult_&outcome vacc;
+by patienticn cohort;
+if ate_&name._&outcome._cont=. then ate_&name._&outcome._cont=ate_&name._&outcome._hist;
+vtime=vacdate-t0;
+if vtime=. or vtime>t_&outcome then vtime=9999999;
+time=t_&outcome;
+time=round(time/10);
+vtime=round(vtime/10);
+run;
+
+
+
+
+
+ods output parameterestimates = pe;
+proc phreg data=model(where=(ate_&name._&outcome._cont^=.)) covs(aggregate) ;
+class cohort (ref="pos")  / param=ref;
+model time *&outcome._out(0)=cohort vm vp vj vo / rl;
+weight ate_&name._&outcome._cont;
+id PatientICN;
+if time>=vtime and moderna=1 then vm=1;else vm=0;
+if time>=vtime and pfizer=1 then vp=1;else vp=0;
+if time>=vtime and jj=1 then vj=1;else vj=0;
+if time>=vtime and ov=1 then vo=1;else vo=0;
+run;
+
+
+
+data pe;
+set pe;
+
+hazardratio=1/hazardratio;
+hruppercl=1/hruppercl;
+hrlowercl=1/hrlowercl;
+
+
+subgroup="&name";
+outcome="&outcome";
+run;
+
+
+data data.vac_tv_result;
+set data.vac_tv_result pe ;
+run;
+%mend;
